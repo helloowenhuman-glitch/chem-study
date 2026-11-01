@@ -1,0 +1,12 @@
+{
+  "name": "chem-study",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": "24.x" },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env.local tools/dev-server.mjs",
+    "test": "node --test tests/core.test.mjs",
+    "check": "node tools/check.mjs"
+  }
+}

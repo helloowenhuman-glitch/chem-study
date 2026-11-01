@@ -1,0 +1,20 @@
+plugins { id 'com.android.application' }
+
+def siteUrl = providers.gradleProperty('appUrl').orElse(providers.environmentVariable('APP_URL')).getOrElse('')
+if (!(siteUrl ==~ /^https:\/\/[a-zA-Z0-9.-]+(?::\d+)?\/?$/)) {
+    throw new GradleException('배포한 사이트 주소를 -PappUrl=https://your-site.vercel.app 으로 지정해 주세요.')
+}
+android {
+    namespace 'app.chemstudy'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'app.chemstudy'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+        buildConfigField 'String', 'APP_URL', '"' + siteUrl + '"'
+    }
+    buildFeatures { buildConfig true }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
