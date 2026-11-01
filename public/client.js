@@ -9,7 +9,9 @@ export async function setupAuth(onChange) {
   let createClient;
   try { ({ createClient } = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/+esm')); }
   catch { throw new Error('로그인 기능을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.'); }
-  client = createClient(configuration.supabaseUrl, configuration.publishableKey);
+  client = createClient(configuration.supabaseUrl, configuration.publishableKey, {
+    auth: { persistSession:true, autoRefreshToken:true, detectSessionInUrl:true }
+  });
   client.auth.onAuthStateChange((event, session) => { setTimeout(() => onChange(event,session), 0); });
   const { data, error } = await client.auth.getSession();
   if (error) throw new Error('로그인 상태를 읽지 못했습니다. 다시 로그인해 주세요.');

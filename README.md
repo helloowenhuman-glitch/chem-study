@@ -53,17 +53,23 @@ npm.cmd test
 npm.cmd run check
 ```
 
-핵심 자동 테스트 9개와 문법·배포 설정 검사입니다. 실제 계정 두 개 사이의 데이터 분리는 Supabase에 SQL을 적용하고 각 계정으로 로그인한 뒤 확인해 주세요.
+핵심 자동 테스트 10개와 문법·배포 설정 검사입니다. 실제 계정 두 개 사이의 데이터 분리는 Supabase에 SQL을 적용하고 각 계정으로 로그인한 뒤 확인해 주세요.
+
+## 로그인과 리포트 연결 유지
+
+로그인 세션은 Supabase SDK의 영구 저장과 자동 갱신을 사용합니다. 기존 로그인 저장소 키를 유지하므로 이 변경 때문에 이미 로그인한 사용자를 로그아웃시키지 않습니다. WebView의 DOM 저장소를 사용하며 앱이 닫힐 때 로그인 저장소를 지우지 않습니다.
+
+연결을 완료한 리포트의 주소와 오답 요약은 계정별 Supabase 테이블에 저장합니다. 앱을 다시 열면 저장된 세션으로 로그인 상태를 복원한 뒤 계정의 리포트 연결을 불러옵니다. APK에서는 같은 계정으로 최초 한 번 로그인해 주세요. 직접 로그아웃하거나 앱 데이터를 삭제하셨다면 재로그인이 필요하지만 서버에 저장된 리포트 연결과 풀이 기록은 같은 계정으로 다시 불러올 수 있습니다.
 
 ## 안드로이드 APK
 
 웹사이트를 먼저 Vercel에 배포해 주세요. Android Studio에서 `android` 폴더를 여시거나 다음 명령으로 빌드하실 수 있습니다. SDK·Gradle 다운로드와 APK 빌드는 오래 걸릴 수 있어 사용자가 직접 실행하는 단계로 남겨 두었습니다.
 
-JDK 17 이상과 Android SDK 35가 필요합니다. Android Studio의 내장 JDK를 사용하셔도 됩니다. SDK 경로는 `ANDROID_HOME` 또는 `android/local.properties`의 `sdk.dir`로 설정해 주세요.
+JDK 17 이상과 Android SDK 35가 필요합니다. 빌드 스크립트가 설치된 Android Studio의 내장 JDK와 기본 SDK 경로를 자동으로 찾습니다. 기존 `android/local.properties`가 있으면 유지하며, 없을 때만 찾은 SDK 경로를 기록합니다.
 
 ```powershell
 Set-Location -LiteralPath 'C:\Users\dhlee\OneDrive\바탕 화면\project\science_DT\web-app\android'
-.\build-apk.ps1 -AppUrl 'https://배포한주소.vercel.app'
+.\build-apk.ps1
 ```
 
-완료 파일은 `android/app/build/outputs/apk/debug/app-debug.apk`입니다. 개인 설치용 debug APK이며, 앱 스토어 배포용 서명본은 아닙니다. HTTPS 사이트만 내부에서 열고, 외부 HTTPS 링크는 기본 브라우저로 전달합니다. 웹과 APK는 같은 계정으로 로그인하면 같은 학습 기록을 사용합니다. APK 빌드·설치·기기 동작은 실제 실행 전에는 확인한 것으로 표시하지 않습니다.
+기본 연결 주소는 `https://chem-study-rho.vercel.app`입니다. 다른 배포 주소를 사용하려면 `-AppUrl 'https://배포한주소.vercel.app'`을 지정해 주세요. 완료 파일은 `android/app/build/outputs/apk/debug/app-debug.apk`입니다. 개인 설치용 debug APK이며, 앱 스토어 배포용 서명본은 아닙니다. HTTPS 사이트만 내부에서 열고, 외부 HTTPS 링크는 기본 브라우저로 전달합니다. 웹과 APK는 같은 계정으로 로그인하면 같은 학습 기록을 사용합니다. APK 빌드·설치·기기 동작은 실제 실행 전에는 확인한 것으로 표시하지 않습니다.

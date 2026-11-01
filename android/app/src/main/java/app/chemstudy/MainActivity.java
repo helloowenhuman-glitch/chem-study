@@ -112,6 +112,15 @@ public class MainActivity extends Activity {
     }
     private int normalizedPort(Uri uri) { return uri.getPort()==-1?443:uri.getPort(); }
     private void showError() {web.setVisibility(View.GONE);errorPanel.setVisibility(View.VISIBLE);progress.setVisibility(View.GONE);}
+    @Override protected void onResume() {
+        super.onResume();
+        if (web != null) web.onResume();
+    }
+    @Override protected void onPause() {
+        if (web != null) web.onPause();
+        CookieManager.getInstance().flush();
+        super.onPause();
+    }
     @Override public void onBackPressed() {if(web.canGoBack())web.goBack();else super.onBackPressed();}
     @Override protected void onSaveInstanceState(Bundle outState) {web.saveState(outState);super.onSaveInstanceState(outState);}
     @Override protected void onDestroy() {web.destroy();super.onDestroy();}

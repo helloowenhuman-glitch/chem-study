@@ -78,3 +78,29 @@ test('이전 계정의 지연된 응답은 로그아웃 또는 계정 전환 이
   const current=beginProgress(state);
   assert.equal(applyProgress(state,current,{...data,report:null,weaknesses:[],attempts:[]}),true);
 });
+
+test('저장한 리포트 연결을 새 요청에서도 계정 기록에서 다시 불러옵니다', async () => {
+  let savedLink=null;
+  const transport=async(url,options={})=>{
+    if(url.endsWith('/auth/v1/user'))return new Response(JSON.stringify({id:'account-A'}));
+    if(url.startsWith('https://script.google.com/'))return new Response(JSON.stringify({rows:[{course:'ch1s',round:9,wrongMis:['짝산·짝염기']}],cumulative:{}}));
+    if(url.includes('/rest/v1/report_links')) {
+      if(options.method==='POST'){savedLink=JSON.parse(options.body);return new Response(null,{status:201});}
+      return new Response(JSON.stringify(savedLink?[savedLink]:[]));
+    }
+    if(url.includes('/rest/v1/study_profiles'))return new Response(JSON.stringify([{target_round:9}]));
+    if(url.includes('/rest/v1/study_answers'))return new Response('[]');
+    throw new Error('Unexpected request');
+  };
+  const env={SUPABASE_URL:'https://example.supabase.co',SUPABASE_PUBLISHABLE_KEY:'fixture-key',REPORT_API_URL:'https://script.google.com/macros/s/fixture/exec'};
+  const headers={Authorization:'Bearer fixture-token','Content-Type':'application/json'};
+  const reportUrl='https://chemistreal.github.io/DT/report.html?student=abcdef123&c=ch1s';
+  const connected=await handleApi(new Request('http://localhost/api/report',{method:'POST',headers,body:JSON.stringify({url:reportUrl})}),env,transport);
+  assert.equal(connected.status,200);
+  const reopened=await handleApi(new Request('http://localhost/api/progress',{headers}),env,transport);
+  assert.equal(reopened.status,200);
+  const restored=await reopened.json();
+  assert.equal(restored.report.report_url,reportUrl);
+  assert.equal(restored.weaknesses[0].name,'짝산·짝염기');
+  assert.equal(restored.targetRound,9);
+});
