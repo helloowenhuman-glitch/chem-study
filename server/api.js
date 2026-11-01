@@ -2,7 +2,7 @@ import { AppError, canonical, checkedRound, grade, publicQuestion, mergeWeakness
 import { loadPlan, loadStudyBank, loadQuestion, loadReport } from './data.js';
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type':'application/json; charset=utf-8', 'Cache-Control':'private, no-store', 'X-Content-Type-Options':'nosniff' } });
-const configOf = env => ({ url: env.SUPABASE_URL || '', key: env.SUPABASE_PUBLISHABLE_KEY || env.SUPABASE_ANON_KEY || '' });
+const configOf = env => ({ url: String(env.SUPABASE_URL || '').trim().replace(/\/+$/,''), key: String(env.SUPABASE_PUBLISHABLE_KEY || env.SUPABASE_ANON_KEY || '').trim() });
 function requireConfig(env) {
   const cfg = configOf(env);
   if (!cfg.url || !cfg.key) throw new AppError('Supabase 연결 설정이 아직 준비되지 않았습니다.', 503);

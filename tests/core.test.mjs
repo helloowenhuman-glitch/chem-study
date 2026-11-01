@@ -40,6 +40,10 @@ test('비정상 회차를 거절하고 공개 설정에 서버 비밀키를 포�
   assert.equal(bad.status,400);
   const config=await handleApi(new Request('http://localhost/api?route=config'),{SUPABASE_SERVICE_ROLE_KEY:'NEVER-EXPOSE'});
   assert.equal((await config.text()).includes('NEVER-EXPOSE'),false);
+  const padded=await handleApi(new Request('http://localhost/api?route=config'),{SUPABASE_URL:' \nhttps://example.supabase.co/\r\n',SUPABASE_PUBLISHABLE_KEY:' fixture-key \n'});
+  const normalized=await padded.json();
+  assert.equal(normalized.supabaseUrl,'https://example.supabase.co');
+  assert.equal(normalized.publishableKey,'fixture-key');
 });
 
 test('exam 인덱스의 별칭을 복습과 풀이 기록에 사용할 수 있도록 보존합니다', async () => {
