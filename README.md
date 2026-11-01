@@ -67,6 +67,8 @@ npm.cmd run check
 
 JDK 17 이상과 Android SDK 35가 필요합니다. 빌드 스크립트가 설치된 Android Studio의 내장 JDK와 기본 SDK 경로를 자동으로 찾습니다. 기존 `android/local.properties`가 있으면 유지하며, 없을 때만 찾은 SDK 경로를 기록합니다.
 
+Windows에서 프로젝트 경로에 한글이 있으면 `%LOCALAPPDATA%\ChemStudyBuild\android`에 소스를 복사해 빌드합니다. 기존 `build`와 `.gradle` 폴더는 복사하지 않습니다. 완성된 APK는 원래 프로젝트의 출력 폴더로 복사하므로 프로젝트를 직접 옮기실 필요가 없습니다. 스크립트는 Windows PowerShell 5.1에서도 한글을 읽을 수 있도록 UTF-8 BOM 형식으로 저장합니다.
+
 ```powershell
 Set-Location -LiteralPath 'C:\Users\dhlee\OneDrive\바탕 화면\project\science_DT\web-app\android'
 .\build-apk.ps1
