@@ -38,6 +38,8 @@ export function normalizeExam(data) {
     id: `exam:${data.examId}:${n}`, kind: 'choice', source: 'exam', sourceId: `${data.examId} ${n}번`, round: null,
     conceptId: '', concept: String(q.concept || q.area || '개념 확인'), stem: String(q.stem),
     choices: q.choices.map(String), answer: String(q.answer), explanation: String(q.explanation || ''),
+    learningPoint: String(q.learningPoint || ''), misconception: String(q.misconception || ''),
+    misconceptions: q.misconceptions && typeof q.misconceptions==='object' ? q.misconceptions : {},
     sourceUrl: `https://github.com/Chemistreal/exam/blob/main/donghyung/${data.examId}.json`
   }));
 }
@@ -146,7 +148,7 @@ export function grade(question, selected) {
 }
 
 export function publicQuestion(q) {
-  const { answer, explanation, conceptMatches, ...visible } = q;
+  const { answer, explanation, conceptMatches, learningPoint, misconception, misconceptions, ...visible } = q;
   return visible;
 }
 

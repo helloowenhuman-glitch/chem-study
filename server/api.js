@@ -1,5 +1,6 @@
 import { AppError, canonical, checkedRound, checkedRounds, grade, publicQuestion, mergeWeaknesses, selectReview, selectBalanced, shuffle } from './core.js';
 import { loadPlan, loadStudyBank, loadPreparationBank, loadQuestion, loadReport } from './data.js';
+import { buildStudyGuide, buildTeaching } from './study.js';
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type':'application/json; charset=utf-8', 'Cache-Control':'private, no-store', 'X-Content-Type-Options':'nosniff' } });
 const configOf = env => ({ url: String(env.SUPABASE_URL || '').trim().replace(/\/+$/,''), key: String(env.SUPABASE_PUBLISHABLE_KEY || env.SUPABASE_ANON_KEY || '').trim() });
@@ -63,6 +64,10 @@ export async function handleApi(request, env = process.env, fetcher = fetch) {
       const plan = await loadPlan(fetcher);
       return json({rounds:Object.entries(plan.rounds).map(([number,r]) => ({number:Number(number),title:r.title,conceptCount:r.new?.length || 0})), course:plan.name});
     }
+    if (route === 'guide' && method === 'GET') {
+      const rounds=checkedRounds(url.searchParams.get('rounds') ?? url.searchParams.get('round') ?? '1');
+      return json(buildStudyGuide(await loadPlan(fetcher),rounds));
+    }
     if (route === 'progress' && method === 'GET') return json(await getProgress(await authenticate(request,env,fetcher),fetcher));
     if (route === 'target' && method === 'POST') {
       const auth = await authenticate(request,env,fetcher);
@@ -106,6 +111,10 @@ export async function handleApi(request, env = process.env, fetcher = fetch) {
       const recordConcept=body.concept?names.find(name=>canonical(name)===canonical(body.concept)):question.concept;
       if(!recordConcept)throw new AppError('문제와 연결되지 않은 개념입니다. 문제를 다시 불러와 주세요.');
       const result = grade(question,body.selected);
+      // Supplementary curriculum lookup must not prevent grading or saving.
+      let plan={};
+      if(!question.conceptId)try { plan=await loadPlan(fetcher); } catch { /* Original explanation remains available. */ }
+      const teaching=buildTeaching(question,body.selected,recordConcept,plan);
       if (auth) {
         if (!/^[0-9a-f-]{36}$/i.test(body.sessionId || '')) throw new AppError('풀이 세션 정보가 올바르지 않습니다.');
         await db(auth,'study_answers?on_conflict=user_id,session_id,question_id','POST',{
@@ -113,7 +122,7 @@ export async function handleApi(request, env = process.env, fetcher = fetch) {
           source:question.source,round,mode:body.mode,selected_answer:String(body.selected),correct:result.correct
         },fetcher,'resolution=ignore-duplicates');
       }
-      return json({...result,saved:!!auth});
+      return json({...result,teaching,saved:!!auth});
     }
     return json({error:'요청한 기능을 찾지 못했습니다.'},404);
   } catch (error) {
