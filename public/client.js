@@ -18,15 +18,17 @@ export async function setupAuth(onChange) {
   return { configured:true, session:data.session };
 }
 
-export async function api(route, { method='GET', body, query={} } = {}) {
+export async function api(route, { method='GET', body, query={}, userId } = {}) {
   const params = new URLSearchParams(query);
   const headers = new Headers();
   if (body !== undefined) headers.set('Content-Type','application/json');
   if (client) {
     const { data, error } = await client.auth.getSession();
     if (error) throw new Error('로그인 상태를 확인하지 못했습니다. 다시 로그인해 주세요.');
+    if (userId && data.session?.user.id!==userId)throw new Error('계정이 변경되어 이전 계정의 저장을 중단했습니다.');
     if (data.session) headers.set('Authorization','Bearer ' + data.session.access_token);
   }
+  if(userId && !headers.has('Authorization'))throw new Error('로그인 후 저장을 다시 시도해 주세요.');
   let response;
   try { response = await fetch('/api/' + route + (params.size ? '?' + params : ''), {method,headers,signal:AbortSignal.timeout(45000),...(body!==undefined?{body:JSON.stringify(body)}:{})}); }
   catch { throw new Error('서버에 연결하지 못했습니다. 인터넷 연결을 확인해 주세요.'); }

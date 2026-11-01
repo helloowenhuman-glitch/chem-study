@@ -25,9 +25,15 @@ export function renderTeaching(teaching,explanation='') {
 export function wrongAnswers(questions,results) {
   return results.flatMap((result,index)=>result && !result.correct && questions[index] ? [{question:questions[index],result,number:index+1}] : []);
 }
-export function retryQuestions(questions,results) {
-  return wrongAnswers(questions,results).map(item=>item.question);
+export function reviewAnswers(questions,results,stars=new Set()) {
+  return results.flatMap((result,index)=>result && questions[index] && (!result.correct || stars.has(questions[index].id)) ? [{question:questions[index],result,number:index+1}] : []);
 }
-export function renderWrongAnswers(questions,results) {
-  return wrongAnswers(questions,results).map(({question:q,result:r,number})=>`<article class="wrong-card"><div class="question-labels"><span class="tag">${number}번 오답</span><span class="tag soft-tag">${escape(q.concept)}</span></div><p class="wrong-stem">${escape(q.stem)}</p><ul class="wrong-choices">${q.choices.map((choice,i)=>{const value=q.kind==='ox'?choice:String(i+1);return `<li class="${value===r.answer?'is-correct':value===r.selected?'is-selected':''}"><span>${q.kind==='ox'?'':`${i+1}. `}${escape(choice)}</span>${value===r.selected?'<strong>내 답</strong>':''}${value===r.answer?'<strong>정답</strong>':''}</li>`;}).join('')}</ul><p class="answer-comparison">내 답 <strong>${escape(r.selected ?? '기록 없음')}</strong> · 정답 <strong>${escape(r.answer)}</strong></p>${renderTeaching(r.teaching,r.explanation)}<div class="source"><a href="${escape(q.sourceUrl || '#')}" target="_blank" rel="noopener noreferrer">문제 원문 · ${escape(q.sourceId || q.id)}</a></div></article>`).join('');
+export function retryQuestions(questions,results,stars=new Set()) {
+  return reviewAnswers(questions,results,stars).map(item=>item.question);
+}
+export function starButton(id,marked) {
+  return `<button type="button" class="star-button" data-star-id="${escape(id)}" aria-label="${marked?'별표 해제':'별표 표시'}" aria-pressed="${marked}"><svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="M12 2.5 15 8.6 21.7 9.6 16.9 14.3 18 21 12 17.8 6 21 7.1 14.3 2.3 9.6 9 8.6Z"/></svg><span>별표</span></button>`;
+}
+export function renderWrongAnswers(questions,results,stars=new Set()) {
+  return reviewAnswers(questions,results,stars).map(({question:q,result:r,number})=>`<article class="wrong-card"><div class="question-heading"><div class="question-labels"><span class="tag">${number}번 ${r.correct?'정답 · 별표':stars.has(q.id)?'오답 · 별표':'오답'}</span><span class="tag soft-tag">${escape(q.concept)}</span></div>${starButton(q.id,stars.has(q.id))}</div><p class="wrong-stem">${escape(q.stem)}</p><ul class="wrong-choices">${q.choices.map((choice,i)=>{const value=q.kind==='ox'?choice:String(i+1);return `<li class="${value===r.answer?'is-correct':value===r.selected?'is-selected':''}"><span>${q.kind==='ox'?'':`${i+1}. `}${escape(choice)}</span>${value===r.selected?'<strong>내 답</strong>':''}${value===r.answer?'<strong>정답</strong>':''}</li>`;}).join('')}</ul><p class="answer-comparison">내 답 <strong>${escape(r.selected ?? '기록 없음')}</strong> · 정답 <strong>${escape(r.answer)}</strong></p>${renderTeaching(r.teaching,r.explanation)}<div class="source"><a href="${escape(q.sourceUrl || '#')}" target="_blank" rel="noopener noreferrer">문제 원문 · ${escape(q.sourceId || q.id)}</a></div></article>`).join('');
 }

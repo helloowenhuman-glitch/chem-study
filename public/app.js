@@ -1,6 +1,7 @@
 import { api, setupAuth, signIn, signUp, resetPassword, updatePassword, signOut, authMessage } from './client.js';
 import { beginProgress, applyProgress, isCurrentProgress, readRoundSelection, saveRoundSelection } from './progress.js';
-import { renderStudyGuide, renderTeaching, renderWrongAnswers, wrongAnswers, retryQuestions } from './study.js';
+import { renderStudyGuide, renderTeaching, renderWrongAnswers, reviewAnswers, retryQuestions, starButton } from './study.js';
+import { hydrateQuestions, instantGrade, readLocalStudy, writeLocalStudy, putJob, acknowledgeJob, mergeBookmarks, drainOutbox, createSyncGate } from './local-study.js';
 
 const main = document.getElementById('main');
 const modal = document.getElementById('modal');
@@ -9,13 +10,76 @@ const state = {
   screen:'home',round:1,selectedRounds:[1],rounds:[],source:'dt',count:10,session:null,configured:false,
   report:null,weaknesses:[],attempts:[],progressError:'',planError:'',busy:false,
   questions:[],results:[],index:0,choice:null,feedback:null,mode:'exam',sessionId:'',
-  emptyMessage:'',authMode:'signin',booted:false,guide:null,guideReturn:'rounds',isRetry:false
+  emptyMessage:'',authMode:'signin',booted:false,guide:null,guideReturn:'rounds',isRetry:false,
+  local:{bookmarks:[],outbox:[]},localVersion:0,localPersisted:true,syncError:'',bookmarkError:''
 };
 let noticeTimer;
 const escape = value => String(value ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const roundLabel = () => state.selectedRounds.length?`${state.selectedRounds.join('·')}회차`:'회차를 선택해 주세요';
 const roundTitle = () => state.selectedRounds.length===1 ? state.rounds.find(r=>r.number===state.selectedRounds[0])?.title || roundLabel() : state.selectedRounds.length ? '선택한 회차의 개념을 함께 준비합니다.' : '준비할 범위를 선택해 주세요.';
 const selectionStorage = () => {try{return window.localStorage;}catch{return null;}};
+const stars = () => new Set(state.local.bookmarks.map(b=>b.question_id));
+const runSync=createSyncGate();
+function restoreLocal() {
+  state.local=readLocalStudy(selectionStorage(),state.session?.user.id);state.localVersion++;state.localPersisted=true;state.syncError='';state.bookmarkError='';
+}
+function persistLocal() {
+  try {writeLocalStudy(selectionStorage(),state.session?.user.id,state.local);state.localPersisted=true;}
+  catch(error){state.localPersisted=false;state.syncError=error.message;}
+}
+function enqueue(route,body,id) {
+  state.local=putJob(state.local,{id,version:crypto.randomUUID(),route,body});persistLocal();
+}
+function flushStudy() {
+  const owner=state.session?.user.id;
+  if(!owner || navigator.onLine===false)return Promise.resolve();
+  return runSync(owner,async()=>{
+    if(state.session?.user.id!==owner)return;
+    state.syncError='';
+    const completed=await drainOutbox({
+      getJobs:()=>state.local.outbox,isCurrent:()=>state.session?.user.id===owner,
+      send:job=>api(job.route,{method:'POST',body:job.body,userId:owner}),
+      ack:(job,reply)=>{
+        state.local=acknowledgeJob(state.local,job);
+        if(job.route==='bookmark')state.localVersion++;
+        for(const result of state.results)if(result.saveId===job.id)Object.assign(result,reply,{saved:true});
+        if(state.feedback?.saveId===job.id)Object.assign(state.feedback,reply,{saved:true});
+        persistLocal();
+      },onError:error=>{state.syncError=error.message;}
+    });
+    if(state.session?.user.id===owner) {
+      if(completed.wroteAnswers && navigator.onLine!==false)await refreshProgress();
+      render();
+      if(state.local.outbox.some(job=>!completed.attempted.has(job.version) && (job.route!=='answer' || !completed.blockedAnswers)))setTimeout(()=>{void flushStudy();},0);
+    }
+  });
+}
+async function refreshBookmarks() {
+  const owner=state.session?.user.id,version=state.localVersion;
+  if(!owner)return;
+  try {
+    const data=await api('bookmarks',{userId:owner});
+    if(state.session?.user.id!==owner || state.localVersion!==version)return;
+    state.local=mergeBookmarks(state.local,data.bookmarks);persistLocal();state.bookmarkError='';
+  } catch(error){if(state.session?.user.id===owner)state.bookmarkError=error.message;}
+}
+function toggleStar(id) {
+  const existing=state.local.bookmarks.find(b=>b.question_id===id);
+  const q=state.questions.find(q=>q.id===id);
+  if(!existing && !q)return;
+  const marked=!existing;
+  const entry=existing || {question_id:id,concept:q.concept,round:q.preparationRound || q.round || state.round};
+  state.local.bookmarks=marked?[entry,...state.local.bookmarks]:state.local.bookmarks.filter(b=>b.question_id!==id);
+  state.localVersion++;
+  if(state.session)enqueue('bookmark',{questionId:id,concept:entry.concept,round:entry.round,marked},`bookmark:${id}`);else persistLocal();
+  render();void flushStudy();
+}
+function saveStatus(result) {
+  return !state.session?'로그인 전 풀이로 계정 기록이 저장되지 않았습니다.':result.saved?'나의 학습 기록에 저장되었습니다.':!state.localPersisted?'기기 임시 저장에 실패했습니다. 앱을 닫기 전에 계정 저장을 다시 시도해 주세요.':`기기에 임시 보관 중입니다. ${state.syncError?'계정 저장에 실패하여 재시도가 필요합니다.':'계정에 저장하고 있습니다.'}`;
+}
+function syncStatus() {
+  return state.session && state.local.outbox.length?`<div class="sync-state" role="status">계정 저장 대기 ${state.local.outbox.length}건${state.syncError?`<p>${escape(state.syncError)}</p>`:''}<button type="button" class="text-button" data-action="retry-sync">저장 다시 시도</button></div>`:'';
+}
 function restoreSelection() {
   state.selectedRounds=readRoundSelection(selectionStorage(),state.session?.user.id,state.round);
   state.round=state.selectedRounds.length?Math.max(...state.selectedRounds):1;
@@ -46,6 +110,7 @@ function home() {
     <button type="button" class="start" data-action="review"><span class="small">나의 오답에서 시작하는 학습</span><span class="start-title">틀린 개념 복습하기</span><span class="start-bottom"><span>${state.session?state.weaknesses.length?`복습할 개념 ${state.weaknesses.length}개`:'리포트와 나의 풀이 기록으로 복습':'로그인하고 나의 오답을 불러오세요'}</span><span class="arrow" aria-hidden="true">→</span></span></button>
     <button type="button" class="secondary" data-action="rounds"><span><strong>다음 시험 준비하기</strong><span class="sub">회차를 고르고 관련 문제를 풀어보세요.</span></span><span aria-hidden="true">→</span></button>
     <button type="button" class="outline" data-action="show-guide"${state.selectedRounds.length?'':' disabled'}>선택한 회차 개념·공식 보기</button>
+    <button type="button" class="outline" data-action="bookmarks">별표 문제 보기 · ${state.local.bookmarks.length}문항</button>${syncStatus()}
     <div class="section-title"><h2>다시 살펴볼 개념</h2>${state.weaknesses.length?`<span class="sub">${state.weaknesses.length}개</span>`:''}</div>
     ${state.progressError?'<p class="description">학습 기록을 다시 불러오면 복습할 개념을 확인하실 수 있습니다.</p>':state.weaknesses.length?state.weaknesses.slice(0,5).map((w,i)=>`<div class="concept-row"><span class="concept-number">${String(i+1).padStart(2,'0')}</span><span class="concept-name">${escape(w.name)}</span><span class="tag">복습 필요</span></div>`).join(''):`<p class="description">${state.session?linked?'리포트와 최근 풀이를 기준으로 복습할 개념이 없습니다.':'리포트를 연결하거나 문제를 풀면 복습할 개념이 표시됩니다.':'로그인 후 리포트를 연결하면 나의 오답 개념이 표시됩니다.'}</p>`}
     ${state.report?`<p class="note">리포트 갱신 ${dateLabel(state.report.synced_at)} · <button type="button" class="text-button" data-action="sync-report">새로 불러오기</button></p>`:''}`;
@@ -62,6 +127,9 @@ function rounds() {
 function guide() {
   return `${back(state.guideReturn,'돌아가기')}<div class="overline">시험 전 개념 정리</div><h1>개념을 짚고,<br>공식을 연결하세요.</h1><p class="description">공식의 뜻과 적용 조건, 풀이 순서를 함께 확인해 주세요. 예시는 현재 출제된 문제와 별도의 학습 예시입니다.</p>${state.guide?renderStudyGuide(state.guide):'<p class="description">회차 선택 화면에서 학습할 범위를 선택해 주세요.</p>'}${primary('rounds','문제 풀 회차 고르기 →')}`;
 }
+function bookmarks() {
+  return `${back('home','홈으로')}<div class="overline">나중에 다시 볼 문제</div><h1>별표로 남긴<br>문제를 모았습니다.</h1><p class="description">맞힌 문제라도 별표를 표시하면 다시 풀 수 있습니다. ${state.session?'문제 번호를 계정에 보관합니다.':'로그인 전에는 이 기기에만 보관합니다.'}</p>${syncStatus()}${state.bookmarkError?`<div class="error-box">${escape(state.bookmarkError)}<button type="button" class="text-button" data-action="refresh-bookmarks">목록 다시 불러오기</button></div>`:''}${state.local.bookmarks.length?`<p class="note">${state.local.bookmarks.length}문항 중 최대 ${state.count}문항을 불러옵니다.</p>${primary('start-bookmarks','별표 문제 다시 풀기 →')}${state.local.bookmarks.map(b=>`<div class="bookmark-row"><div><strong>${escape(b.concept)}</strong><p class="sub">${escape(b.question_id)} · ${b.round}회차</p></div>${starButton(b.question_id,true)}</div>`).join('')}`:'<section class="empty"><h2>아직 별표 문제가 없습니다.</h2><p>문제 옆의 별표 버튼을 눌러 보관해 주세요.</p></section>'}`;
+}
 function review() {
   return `${back('home','홈으로')}<div class="overline">오답 복습</div><h1>헷갈린 개념을<br>다시 살펴보세요.</h1><p class="description">리포트에서 틀렸던 개념과 이곳에서 틀린 문제를 함께 복습합니다.</p>
     ${state.progressError?`<div class="error-box" role="alert">${escape(state.progressError)}${primary('refresh','다시 불러오기')}</div>`:state.weaknesses.length?`<div class="section-title"><h2>복습할 개념</h2><span class="sub">${state.weaknesses.length}개</span></div>${state.weaknesses.slice(0,15).map(w=>`<div class="concept-row"><span class="concept-name">${escape(w.name)}</span><span class="tag">${w.origin==='app'?'앱 오답':'리포트 오답'}</span></div>`).join('')}${options()}${primary('start-review','개념 복습 시작하기 →')}<p class="note">최근에 맞힌 개념은 복습 대기 목록에서 빠집니다. 전체 개념의 숙달을 판정하는 기능은 아닙니다.</p>`:`<div class="empty"><h2>복습할 오답이 없습니다.</h2><p>${state.report?'시험 대비 문제를 풀며 이해를 확인해 보세요.':'개인 리포트를 연결하거나 시험 대비 문제를 풀어보세요.'}</p>${primary(state.report?'rounds':'report',state.report?'시험 대비 문제 고르기':'리포트 연결하기')}</div>`}`;
@@ -70,18 +138,18 @@ function practice() {
   if (!state.questions.length) return `${back(state.mode==='review'?'review':'rounds','돌아가기')}<div class="overline">문제 찾기</div><h1>관련 문제를<br>찾지 못했습니다.</h1><p class="description">${escape(state.emptyMessage)}</p>${primary(state.mode==='review'?'review':'rounds','문제 자료 다시 선택하기')}`;
   if (state.index>=state.questions.length) return result();
   const q=state.questions[state.index];
-  return `${back(state.mode==='review'?'review':'rounds',state.mode==='review'?'복습 목록으로':'회차 선택으로')}<div class="question-top"><span class="overline">${state.isRetry?'틀린 문제 다시 풀기':state.mode==='review'?'틀린 개념 복습':`선수노트 ${roundLabel()} 대비`}</span><span class="counter">${String(state.index+1).padStart(2,'0')} / ${String(state.questions.length).padStart(2,'0')}</span></div>
+  return `${back(state.mode==='review'?'review':'rounds',state.mode==='review'?'복습 목록으로':'회차 선택으로')}<div class="question-top"><span class="overline">${state.isRetry?'오답·별표 다시 풀기':state.mode==='review'?'틀린 개념 복습':`선수노트 ${roundLabel()} 대비`}</span><span class="counter">${String(state.index+1).padStart(2,'0')} / ${String(state.questions.length).padStart(2,'0')}</span></div>
     <div class="progress" role="progressbar" aria-label="문제 풀이 진행" aria-valuemin="0" aria-valuemax="${state.questions.length}" aria-valuenow="${state.index}"><div class="progress-fill" style="width:${100*state.index/state.questions.length}%"></div></div>
-    <h2>${escape(q.concept)}</h2><div class="question-labels"><span class="tag soft-tag">${escape(q.source)}</span><span class="tag">${q.kind==='ox'?'OX':'객관식'}</span></div>
+    <div class="question-heading"><h2>${escape(q.concept)}</h2>${starButton(q.id,stars().has(q.id))}</div><div class="question-labels"><span class="tag soft-tag">${escape(q.source)}</span><span class="tag">${q.kind==='ox'?'OX':'객관식'}</span></div>
     <section class="question" aria-label="${state.index+1}번 문제"><div class="question-index">Question ${String(state.index+1).padStart(2,'0')}</div><p class="stem">${escape(q.stem)}</p><div class="source"><a href="${escape(q.sourceUrl)}" target="_blank" rel="noopener noreferrer">자료 출처 · ${escape(q.sourceId)}</a></div></section>
     <div class="answer-options ${q.kind==='choice'?'multiple':''}" role="group" aria-label="정답 선택">${q.choices.map((choice,i)=>{const value=q.kind==='ox'?choice:String(i+1);return `<button type="button" class="answer" data-choice="${value}" aria-pressed="${state.choice===value}"${state.feedback?' disabled':''}>${q.kind==='ox'?`<span class="answer-symbol">${choice}</span><span class="answer-caption">${choice==='O'?'맞습니다':'틀립니다'}</span>`:`<span class="choice-number">${i+1}</span><span>${escape(choice)}</span>`}</button>`;}).join('')}</div>
-    ${state.feedback?`<section class="feedback ${state.feedback.correct?'':'incorrect'}" role="status"><h3>${state.feedback.correct?'정답입니다.':`다시 살펴보세요. 정답은 ${escape(state.feedback.answer)}입니다.`}</h3>${renderTeaching(state.feedback.teaching,state.feedback.explanation)}<div class="save-state">${state.feedback.saved?'나의 학습 기록에 저장되었습니다.':'로그인 전 풀이로 기록이 저장되지 않았습니다.'}</div></section>${primary('next',state.index===state.questions.length-1?'풀이 결과 보기 →':'다음 문제 →')}`:primary('submit','정답 확인하기',!state.choice)}
+    ${state.feedback?`<section class="feedback ${state.feedback.correct?'':'incorrect'}" role="status"><h3>${state.feedback.correct?'정답입니다.':`다시 살펴보세요. 정답은 ${escape(state.feedback.answer)}입니다.`}</h3>${renderTeaching(state.feedback.teaching,state.feedback.explanation)}<div class="save-state">${saveStatus(state.feedback)}</div></section>${syncStatus()}${primary('next',state.index===state.questions.length-1?'풀이 결과 보기 →':'다음 문제 →')}`:primary('submit','정답 확인하기',!state.choice)}
     ${!state.session?'<p class="note">로그인하면 풀이 결과가 저장되어 오답 복습으로 이어집니다.</p>':''}`;
 }
 function result() {
   const correct=state.results.filter(r=>r.correct).length;
-  const wrong=wrongAnswers(state.questions,state.results);
-  return `<div class="overline">${state.isRetry?'오답 재풀이 완료':'학습 완료'}</div><h1>한 번 더 살펴본 만큼,<br>개념이 선명해집니다.</h1><div class="result-number">${correct}<small> / ${state.results.length}</small></div><p class="description">${state.results.length}문항 중 ${correct}문항을 맞히셨습니다.</p><div class="result-list">${state.results.map((r,i)=>`<div class="result-row"><span>${i+1}. ${escape(state.questions[i].concept)}</span><span class="${r.correct?'correct':'wrong'}">${r.correct?'정답':'다시 복습'}</span></div>`).join('')}</div>${wrong.length?`<div class="section-title"><h2>틀린 문제 다시 보기</h2><span class="tag">${wrong.length}문항</span></div><p class="description">내 답과 정답을 비교하고, 해설에서 판단과 계산 과정을 확인해 주세요.</p>${renderWrongAnswers(state.questions,state.results)}${primary('retry-wrong',`틀린 ${wrong.length}문제만 다시 풀기 →`)}`:'<section class="empty"><h2>모든 문제를 맞히셨습니다.</h2><p>다른 회차를 선택하거나 개념·공식을 다시 살펴보세요.</p></section>'}${primary('home','홈으로 돌아가기')}<button type="button" class="outline" data-action="${state.session?'review':'account'}">${state.session?'오답 개념 복습하기':'로그인하고 기록 시작하기'}</button>`;
+  const wrong=reviewAnswers(state.questions,state.results,stars());
+  return `<div class="overline">${state.isRetry?'다시 볼 문제 풀이 완료':'학습 완료'}</div><h1>한 번 더 살펴본 만큼,<br>개념이 선명해집니다.</h1><div class="result-number">${correct}<small> / ${state.results.length}</small></div><p class="description">${state.results.length}문항 중 ${correct}문항을 맞히셨습니다.</p><div class="result-list">${state.results.map((r,i)=>`<div class="result-row"><span>${i+1}. ${escape(state.questions[i].concept)}</span><span class="${r.correct?'correct':'wrong'}">${r.correct?'정답':'오답'}${stars().has(state.questions[i].id)?' · 별표':''}</span></div>`).join('')}</div>${wrong.length?`<div class="section-title"><h2>오답과 별표 다시 보기</h2><span class="tag">${wrong.length}문항</span></div><p class="description">틀린 문제와 별표한 문제를 한 번씩 모았습니다. 내 답과 정답, 해설을 확인해 주세요.</p>${renderWrongAnswers(state.questions,state.results,stars())}${primary('retry-wrong',`다시 볼 ${wrong.length}문제 함께 풀기 →`)}`:'<section class="empty"><h2>모든 문제를 맞히셨습니다.</h2><p>다른 회차를 선택하거나 개념·공식을 다시 살펴보세요.</p></section>'}${syncStatus()}${primary('home','홈으로 돌아가기')}<button type="button" class="outline" data-action="${state.session?'review':'account'}">${state.session?'오답 개념 복습하기':'로그인하고 기록 시작하기'}</button>`;
 }
 function records() {
   const total=state.attempts.length;
@@ -90,7 +158,7 @@ function records() {
     ${state.progressError?`<div class="error-box" role="alert">${escape(state.progressError)}${primary('refresh','다시 불러오기')}</div>`:`<div class="metrics"><div><span class="metric-value">${total}</span><span class="sub">푼 문제</span></div><div><span class="metric-value">${total?Math.round(correct/total*100):0}%</span><span class="sub">정답률</span></div><div><span class="metric-value">${state.weaknesses.length}</span><span class="sub">복습할 개념</span></div></div><p class="record-limit">최근 최대 1,000문항의 앱 풀이 기록 기준입니다.</p><div class="section-title"><h2>최근 풀이</h2><button type="button" class="text-button" data-action="refresh">새로고침</button></div>${total?state.attempts.slice(0,30).map(a=>`<div class="record"><div class="record-title"><span>${escape(a.concept)}</span><span class="${a.correct?'correct':'wrong'}">${a.correct?'정답':'오답'}</span></div><p class="sub">${dateLabel(a.created_at)} · ${a.round}회차 ${a.mode==='review'?'복습':'대비'} · ${escape(a.source)}</p></div>`).join(''):'<p class="description">아직 풀이 기록이 없습니다. 첫 문제를 풀어보세요.</p>'}`}`;
 }
 function render() {
-  main.innerHTML = state.busy?'<div class="loading" role="status">잠시만 기다려 주세요.</div>':({home,rounds,guide,review,practice,records}[state.screen] || home)();
+  main.innerHTML = state.busy?'<div class="loading" role="status">잠시만 기다려 주세요.</div>':({home,rounds,guide,bookmarks,review,practice,records}[state.screen] || home)();
   const active=state.screen==='guide'?'rounds':state.screen==='practice'?(state.mode==='review'?'review':'rounds'):state.screen;
   document.querySelectorAll('.bottom-nav button').forEach(b=>{if(b.dataset.action===active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');b.disabled=state.busy;});
   const account=document.getElementById('account-button');
@@ -134,9 +202,9 @@ async function startStudy(mode) {
   if(mode==='review'&&!state.session){authDialog();return;}
   if(mode==='exam'&&!state.selectedRounds.length){notify('준비할 회차를 1개 이상 선택해 주세요.',true);return;}
   await run(async()=>{
-    if(state.session) await api('target',{method:'POST',body:{round:state.round}});
-    const data=await api('questions',{query:{round:state.round,...(mode==='exam'?{rounds:state.selectedRounds.join(',')}:{}),source:state.source,count:state.count,mode}});
-    Object.assign(state,{mode,questions:data.questions,emptyMessage:data.message,index:0,choice:null,feedback:null,results:[],sessionId:crypto.randomUUID(),isRetry:false});
+    const data=await api('questions',{query:{round:state.round,...(mode==='exam'?{rounds:state.selectedRounds.join(',')}:{}),source:state.source,count:state.count,mode,instant:1}});
+    Object.assign(state,{mode,questions:hydrateQuestions(data),emptyMessage:data.message,index:0,choice:null,feedback:null,results:[],sessionId:crypto.randomUUID(),isRetry:false});
+    if(state.session){enqueue('target',{round:state.round},'target');void flushStudy();}
     navigate('practice');
     if(data.questions.length && data.questions.length<state.count)notify(`연결되는 문제 ${data.questions.length}문항으로 시작합니다.`);
   });
@@ -146,6 +214,14 @@ async function action(name) {
   switch(name) {
     case 'home':navigate('home');render();break;
     case 'rounds':navigate('rounds');render();break;
+    case 'bookmarks':navigate('bookmarks');render();void flushStudy();await refreshBookmarks();render();break;
+    case 'refresh-bookmarks':await refreshBookmarks();render();break;
+    case 'retry-sync':await flushStudy();break;
+    case 'start-bookmarks':await run(async()=>{
+      const data=await api('saved-questions',{method:'POST',body:{items:state.local.bookmarks.slice(0,state.count)}});
+      Object.assign(state,{mode:'exam',questions:hydrateQuestions(data),emptyMessage:'원문에서 별표 문제를 찾지 못했습니다. 목록에서 해당 별표를 해제할 수 있습니다.',index:0,choice:null,feedback:null,results:[],sessionId:crypto.randomUUID(),isRetry:true});
+      navigate('practice');if(data.missing.length)notify(`원문에서 찾지 못한 ${data.missing.length}문항을 제외했습니다.`);
+    });break;
     case 'show-guide':
       if(!state.selectedRounds.length){notify('준비할 회차를 1개 이상 선택해 주세요.',true);break;}
       await run(async()=>{const data=await api('guide',{query:{rounds:state.selectedRounds.join(',')}});state.guideReturn=state.screen;state.guide=data;navigate('guide');});break;
@@ -159,7 +235,7 @@ async function action(name) {
     case 'reset':authDialog('reset');break;
     case 'logout':{
       const {error}=await signOut();if(error){notify(authMessage(error),true);break;}
-      modal.close();Object.assign(state,{session:null,report:null,attempts:[],weaknesses:[],progressError:'',screen:'home',round:1,questions:[],results:[],sessionId:''});restoreSelection();render();break;
+      modal.close();Object.assign(state,{session:null,report:null,attempts:[],weaknesses:[],progressError:'',screen:'home',round:1,questions:[],results:[],sessionId:''});restoreSelection();restoreLocal();render();break;
     }
     case 'refresh':await run(refreshProgress);break;
     case 'reload-plan':await run(async()=>{try{state.rounds=(await api('plan')).rounds;state.planError='';}catch(error){state.planError=error.message;}});break;
@@ -167,25 +243,33 @@ async function action(name) {
     case 'start-exam':await startStudy('exam');break;
     case 'start-review':await startStudy('review');break;
     case 'retry-wrong':{
-      const questions=retryQuestions(state.questions,state.results);
+      const questions=retryQuestions(state.questions,state.results,stars());
       if(!questions.length)break;
       Object.assign(state,{questions,index:0,choice:null,feedback:null,results:[],sessionId:crypto.randomUUID(),isRetry:true});
       window.scrollTo({top:0});render();break;
     }
     case 'submit':
       if(!state.choice || state.feedback)return;
+      if(state.questions[state.index].solution) {
+        const q=state.questions[state.index],result=instantGrade(q,state.choice);
+        result.saveId=`answer:${state.sessionId}:${q.id}`;
+        if(state.session)enqueue('answer',{questionId:q.id,concept:q.concept,selected:state.choice,sessionId:state.sessionId,round:q.preparationRound || q.round || state.round,mode:state.mode},result.saveId);
+        state.feedback=result;state.results[state.index]=result;render();void flushStudy();break;
+      }
       await run(async()=>{const q=state.questions[state.index];const result=await api('answer',{method:'POST',body:{questionId:q.id,concept:q.concept,selected:state.choice,sessionId:state.sessionId,round:q.preparationRound || state.round,mode:state.mode}});state.feedback=result;state.results[state.index]={...result,selected:state.choice};});break;
     case 'next':
       if(!state.feedback)return;
       state.index++;state.choice=null;state.feedback=null;
       window.scrollTo({top:0});
-      if(state.index>=state.questions.length && state.session)await run(refreshProgress);else render();break;
+      render();
+      if(state.index>=state.questions.length && state.session)void flushStudy();break;
   }
 }
 document.addEventListener('click',event=>{
   const button=event.target.closest('button');
   if(!button || button.disabled)return;
   if(button.dataset.action){action(button.dataset.action).catch(error=>notify(error.message,true));return;}
+  if(button.dataset.starId){toggleStar(button.dataset.starId);return;}
   if(button.dataset.round){
     const round=Number(button.dataset.round);
     state.selectedRounds=state.selectedRounds.includes(round)?state.selectedRounds.filter(r=>r!==round):[...state.selectedRounds,round].sort((a,b)=>a-b);
@@ -201,7 +285,7 @@ document.addEventListener('change',event=>{
 });
 window.addEventListener('popstate',event=>{
   const next=event.state?.chemScreen || 'home';
-  state.screen=['home','rounds','guide','review','practice','records'].includes(next)?next:'home';
+  state.screen=['home','rounds','guide','bookmarks','review','practice','records'].includes(next)?next:'home';
   if(!state.session && ['review','records'].includes(state.screen))state.screen='home';
   if(modal.open)modal.close();
   render();
@@ -241,12 +325,15 @@ async function boot() {
       const changed=state.session?.user.id!==session?.user.id;
       state.session=session;
       if(!state.booted)return;
-      if(changed){state.report=null;state.attempts=[];state.weaknesses=[];state.progressError='';state.screen='home';state.sessionId='';state.questions=[];state.results=[];state.feedback=null;state.round=1;restoreSelection();await refreshProgress();}
+      if(changed){state.report=null;state.attempts=[];state.weaknesses=[];state.progressError='';state.screen='home';state.sessionId='';state.questions=[];state.results=[];state.feedback=null;state.round=1;restoreSelection();restoreLocal();await refreshProgress();void flushStudy();void refreshBookmarks().then(render);}
       render();
     })
   ]);
   if(results[0].status==='fulfilled')state.rounds=results[0].value.rounds;else state.planError=results[0].reason.message;
   if(results[1].status==='fulfilled'){state.configured=results[1].value.configured;state.session=results[1].value.session;}else notify(results[1].reason.message,true);
-  restoreSelection();await refreshProgress();state.booted=true;history.replaceState({chemScreen:'home'},'',location.pathname);render();
+  restoreSelection();restoreLocal();await refreshProgress();state.booted=true;history.replaceState({chemScreen:'home'},'',location.pathname);render();void flushStudy();void refreshBookmarks().then(render);
 }
+window.addEventListener('online',()=>{void flushStudy();});
+window.addEventListener('focus',()=>{void flushStudy();});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')void flushStudy();});
 boot().catch(error=>{main.innerHTML=`<div class="error-box" role="alert">${escape(error.message)}<p>브라우저를 새로고침해 주세요.</p></div>`;});

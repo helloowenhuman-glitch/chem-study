@@ -1,6 +1,6 @@
 import { AppError, canonical, checkedRound, checkedRounds, grade, publicQuestion, mergeWeaknesses, selectReview, selectBalanced, shuffle } from './core.js';
 import { loadPlan, loadStudyBank, loadPreparationBank, loadQuestion, loadReport } from './data.js';
-import { buildStudyGuide, buildTeaching } from './study.js';
+import { buildStudyGuide, buildTeaching, packQuestions } from './study.js';
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type':'application/json; charset=utf-8', 'Cache-Control':'private, no-store', 'X-Content-Type-Options':'nosniff' } });
 const configOf = env => ({ url: String(env.SUPABASE_URL || '').trim().replace(/\/+$/,''), key: String(env.SUPABASE_PUBLISHABLE_KEY || env.SUPABASE_ANON_KEY || '').trim() });
@@ -69,6 +69,44 @@ export async function handleApi(request, env = process.env, fetcher = fetch) {
       return json(buildStudyGuide(await loadPlan(fetcher),rounds));
     }
     if (route === 'progress' && method === 'GET') return json(await getProgress(await authenticate(request,env,fetcher),fetcher));
+    if (route === 'bookmarks' && method === 'GET') {
+      const auth=await authenticate(request,env,fetcher);
+      return json({bookmarks:await db(auth,`study_bookmarks?user_id=eq.${encodeURIComponent(auth.user.id)}&select=question_id,concept,round,created_at&order=created_at.desc`,'GET',undefined,fetcher) || []});
+    }
+    if (route === 'bookmark' && method === 'POST') {
+      const auth=await authenticate(request,env,fetcher);
+      const body=await bodyOf(request);
+      const id=String(body.questionId || '');
+      if(!/^(?:dt:(?:[1-9]|10):\d{1,2}-\d{1,3}|exam:[a-zA-Z0-9_-]{1,90}:\d{1,3})$/.test(id) || typeof body.marked!=='boolean')throw new AppError('별표 문제 정보가 올바르지 않습니다.');
+      if(body.marked) {
+        const question=await loadQuestion(id,fetcher);
+        const concept=[question.concept,...(question.matchingConcepts || [])].find(c=>canonical(c)===canonical(body.concept)) || question.concept;
+        await db(auth,'study_bookmarks?on_conflict=user_id,question_id','POST',{user_id:auth.user.id,question_id:id,concept,round:checkedRound(body.round)},fetcher,'resolution=merge-duplicates');
+      } else await db(auth,`study_bookmarks?user_id=eq.${encodeURIComponent(auth.user.id)}&question_id=eq.${encodeURIComponent(id)}`,'DELETE',undefined,fetcher);
+      return json({saved:true});
+    }
+    if (route === 'saved-questions' && method === 'POST') {
+      const body=await bodyOf(request);
+      if(!Array.isArray(body.items) || !body.items.length || body.items.length>60)throw new AppError('별표 문제를 1개부터 60개까지 선택해 주세요.');
+      const entries=[...new Map(body.items.map(item=>{
+        checkedRound(item.round);
+        if(typeof item.question_id!=='string')throw new AppError('문제 번호가 올바르지 않습니다.');
+        return [item.question_id,item];
+      })).values()];
+      const groups=new Map();
+      for(const entry of entries){const key=entry.question_id.split(':').slice(0,2).join(':');if(!groups.has(key))groups.set(key,[]);groups.get(key).push(entry);}
+      const missing=[];
+      const read=async entry=>{
+        try {
+          const q=await loadQuestion(entry.question_id,fetcher);
+          const concept=[q.concept,...(q.matchingConcepts || [])].find(c=>canonical(c)===canonical(entry.concept)) || q.concept;
+          return {...q,concept,preparationRound:Number(entry.round)};
+        } catch(error){if(error.status===404){missing.push(entry.question_id);return null;}throw error;}
+      };
+      const banks=await Promise.all([...groups.values()].map(async group=>[await read(group[0]),...await Promise.all(group.slice(1).map(read))]));
+      let plan={};try{plan=await loadPlan(fetcher);}catch{/* Explanations are still available. */}
+      return json({...packQuestions(banks.flat().filter(Boolean),plan),missing});
+    }
     if (route === 'target' && method === 'POST') {
       const auth = await authenticate(request,env,fetcher);
       const body = await bodyOf(request);
@@ -97,9 +135,14 @@ export async function handleApi(request, env = process.env, fetcher = fetch) {
       }
       const all = mode==='exam' && rounds ? await loadPreparationBank(rounds,source,fetcher) : await loadStudyBank(round,source,weak,fetcher);
       const matched = mode === 'review' ? selectReview(all,weak,all.length) : all;
-      // Shuffle a copy; answers and explanations remain on the server until submission.
+      // Existing clients keep server grading; instant mode preloads this set only.
       const chosen=mode==='exam' && rounds ? selectBalanced(matched,count) : shuffle(matched).slice(0,count);
-      return json({questions:chosen.map(publicQuestion),total:matched.length,message:matched.length?'':'이 범위와 정확히 연결되는 문제가 없습니다. 다른 문제 자료를 선택해 주세요.'});
+      let packed={questions:chosen.map(publicQuestion)};
+      if(url.searchParams.get('instant')==='1') {
+        let plan={};if(chosen.some(q=>!q.conceptId))try{plan=await loadPlan(fetcher);}catch{/* Original solution is sufficient. */}
+        packed=packQuestions(chosen,plan);
+      }
+      return json({...packed,total:matched.length,message:matched.length?'':'이 범위와 정확히 연결되는 문제가 없습니다. 다른 문제 자료를 선택해 주세요.'});
     }
     if (route === 'answer' && method === 'POST') {
       const body = await bodyOf(request);

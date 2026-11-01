@@ -1,4 +1,4 @@
-import { canonical } from './core.js';
+import { canonical, publicQuestion } from './core.js';
 import { studyTopics } from './study-content.js';
 
 const numberOf=id=>Number(/^CH1S-(\d+)$/.exec(String(id))?.[1]);
@@ -30,4 +30,14 @@ export function buildTeaching(question,selected,recordConcept,plan={}) {
     concept:recordConcept,
     sourceUrl:question.sourceUrl
   };
+}
+
+export function packQuestions(questions,plan={}) {
+  const topics={};
+  return {questions:questions.map(q=>{
+    const teaching=buildTeaching(q,null,q.concept,plan);
+    const {topic,...brief}=teaching;
+    if(topic)topics[topic.id]=topic;
+    return {...publicQuestion(q),solution:{answer:q.answer,explanation:q.explanation,mistakes:q.misconceptions || {},teaching:{...brief,topicId:topic?.id || ''}}};
+  }),topics};
 }
