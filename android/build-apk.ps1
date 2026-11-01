@@ -16,9 +16,9 @@ $wrapperDirectory=Join-Path $androidRoot 'gradle\wrapper'
 $wrapperPath=Join-Path $wrapperDirectory 'gradle-wrapper.jar'
 New-Item -ItemType Directory -Path $wrapperDirectory -Force | Out-Null
 if(-not (Test-Path -LiteralPath $wrapperPath)) {
-  Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/gradle/gradle/v8.11.1/gradle/wrapper/gradle-wrapper.jar' -OutFile $wrapperPath
+  Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/gradle/gradle/v8.11.1/gradle/wrapper/gradle-wrapper.jar' -OutFile $wrapperPath
 }
-$hashReply=Invoke-WebRequest -Uri 'https://services.gradle.org/distributions/gradle-8.11.1-wrapper.jar.sha256'
+$hashReply=Invoke-WebRequest -UseBasicParsing -Uri 'https://services.gradle.org/distributions/gradle-8.11.1-wrapper.jar.sha256'
 $expectedHash=if($hashReply.Content -is [byte[]]){[System.Text.Encoding]::UTF8.GetString($hashReply.Content).Trim()}else{([string]$hashReply.Content).Trim()}
 if((Get-FileHash -LiteralPath $wrapperPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash.ToLowerInvariant()){throw 'Gradle Wrapper 검증에 실패했습니다.'}
 Push-Location -LiteralPath $androidRoot
