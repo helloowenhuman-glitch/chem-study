@@ -3,7 +3,93 @@ import assert from 'node:assert/strict';
 import { parseReportLink, normalizeDt, normalizeExam, extractWeaknesses, selectReview, grade } from '../server/core.js';
 import { handleApi } from '../server/api.js';
 import { loadStudyBank, loadQuestion } from '../server/data.js';
-import { beginProgress, applyProgress } from '../public/progress.js';
+import { beginProgress, applyProgress, readRoundSelection, saveRoundSelection } from '../public/progress.js';
+import * as core from '../server/core.js';
+
+test('개념별로 균등 배분하고 나머지와 부족한 개념의 몫을 남은 문제에 배분합니다', () => {
+  const make=(concept,n)=>Array.from({length:n},(_,i)=>({id:`${concept}:${i}`,concept,stem:`${concept} 문제 ${i}`,choices:['O','X']}));
+  const bank=[...make('A',8),...make('B',8),...make('C',8)];
+  const selected=core.selectBalanced(bank,10,()=>0.5);
+  const counts=Object.values(selected.reduce((all,q)=>{all[q.concept]=(all[q.concept] || 0)+1;return all;},{})).sort();
+  assert.deepEqual(counts,[3,3,4]);
+  const scarce=core.selectBalanced([...make('A',1),...make('B',8),...make('C',8)],10,()=>0.5);
+  assert.equal(scarce.length,10);
+  assert.equal(scarce.filter(q=>q.concept==='A').length,1);
+  assert.deepEqual(['B','C'].map(c=>scarce.filter(q=>q.concept===c).length).sort(),[4,5]);
+  assert.equal(core.selectBalanced(bank,2).length,2);
+  assert.equal(core.selectBalanced(make('A',2),10).length,2);
+});
+
+test('다른 회차에서 반복된 같은 지문과 선택지는 한 번만 출제합니다', () => {
+  const q={concept:'개념',stem:'본문 0.1',choices:['O','X']};
+  const selected=core.selectBalanced([{...q,id:'a'},{...q,id:'b'},{...q,id:'c',stem:'본문 01'}],10);
+  assert.equal(selected.length,2);
+  assert.equal(new Set(selected.map(q=>q.stem)).size,2);
+});
+
+test('기억한 회차는 기기에서 계정별로 복원하고 저장소를 쓸 수 없어도 학습을 막지 않습니다', () => {
+  const values=new Map();
+  const storage={getItem:key=>values.get(key) ?? null,setItem:(key,value)=>values.set(key,value)};
+  saveRoundSelection(storage,'A',[1,3]);
+  saveRoundSelection(storage,'B',[2,4]);
+  assert.deepEqual(readRoundSelection(storage,'A',9),[1,3]);
+  assert.deepEqual(readRoundSelection(storage,'B',9),[2,4]);
+  assert.deepEqual(readRoundSelection(storage,null,9),[9]);
+  assert.deepEqual(readRoundSelection({getItem:()=>'{bad'},'A',2),[2]);
+  assert.doesNotThrow(()=>saveRoundSelection(null,'A',[1]));
+});
+
+const preparationPlan={rounds:{1:{new:['C1']},2:{new:['C2']},3:{new:['C3']}},concepts:{C1:{m:'개념 A',r:1},C2:{m:'개념 B',r:2},C3:{m:'개념 C',r:3}}};
+const preparationFetch=async url=>{
+  if(url.endsWith('plan_ch1s.json'))return Response.json(preparationPlan);
+  if(url.endsWith('index.json'))return Response.json({concept:{'개념 A':['fixture:1'],'개념 B':['fixture:2'],'개념 C':['fixture:3']}});
+  if(url.includes('/donghyung/'))return Response.json({examId:'fixture',questions:Object.fromEntries([1,2,3].map((n)=>[n,{concept:`원문 ${n}`,stem:`객관식 ${n}`,choices:['가','나','다','라'],answer:1}]))});
+  const round=Number(url.match(/round_ch1s_(\d+)\.json$/)?.[1]);
+  if(!round)throw new Error('Unexpected URL');
+  return Response.json({jeongsi:{items:[1,2,3].filter(n=>n<=round).map(n=>({n:`${round}-${n}`,c:`C${n}`,mis:`개념 ${['A','B','C'][n-1]}`,s:`OX ${n}`,a:'O'}))}});
+};
+
+test('선택한 1·3회차만 DT와 exam에서 합치고 누적 중복과 2회차를 제외합니다', async () => {
+  for(const source of ['dt','exam']) {
+    const response=await handleApi(new Request(`http://localhost/api/questions?rounds=1,3&source=${source}&count=5`),{},preparationFetch);
+    assert.equal(response.status,200);
+    const data=await response.json();
+    assert.equal(data.total,2);
+    assert.deepEqual(data.questions.map(q=>q.concept).sort(),['개념 A','개념 C']);
+    assert.deepEqual(data.questions.map(q=>q.preparationRound).sort(),[1,3]);
+    assert.ok(data.questions.every(q=>!('answer' in q) && !('explanation' in q)));
+  }
+});
+
+test('빈 회차와 잘못된 회차를 원격 조회 전에 거절하고 중복 회차는 정리합니다', async () => {
+  for(const rounds of ['', '0,1', '1,11', '1,,3', 'NaN']) {
+    let called=false;
+    const response=await handleApi(new Request(`http://localhost/api/questions?rounds=${rounds}`),{},async()=>{called=true;throw Error('must not fetch');});
+    assert.equal(response.status,400,rounds);
+    assert.equal(called,false);
+  }
+  const repeated=await handleApi(new Request('http://localhost/api/questions?rounds=3,1,3'),{},preparationFetch);
+  assert.equal((await repeated.json()).total,2);
+  const legacy=await handleApi(new Request('http://localhost/api/questions?round=3'),{},preparationFetch);
+  assert.equal((await legacy.json()).total,3);
+});
+
+test('공유 exam 문항도 개념별 배분에 참여하고 다섯 번째 시험지의 개념도 포함합니다', async () => {
+  const transport=async url=>{
+    if(url.endsWith('plan_ch1s.json'))return Response.json({rounds:{},concepts:{A:{m:'A',r:1},B:{m:'B',r:2},C:{m:'C',r:3}}});
+    if(url.endsWith('index.json'))return Response.json({concept:{A:Array.from({length:20},(_,i)=>`one:${i+1}`).concat(['two:1','three:1','four:1']),B:Array.from({length:10},(_,i)=>`one:${i+1}`),C:['five:1']}});
+    const id=url.match(/\/([^/]+)\.json$/)[1];
+    return Response.json({examId:id,questions:Object.fromEntries(Array.from({length:id==='one'?20:1},(_,i)=>[i+1,{concept:'원문',stem:`${id} ${i+1}`,choices:['가','나','다','라'],answer:1}]))});
+  };
+  const shared=await handleApi(new Request('http://localhost/api/questions?rounds=1,2&source=exam&count=10'),{},transport);
+  const questions=(await shared.json()).questions;
+  assert.equal(questions.filter(q=>q.concept==='A').length,5);
+  assert.equal(questions.filter(q=>q.concept==='B').length,5);
+  assert.equal(new Set(questions.map(q=>q.id)).size,10);
+  assert.ok(questions.every(q=>q.preparationRound===(q.concept==='A'?1:2)));
+  const all=await handleApi(new Request('http://localhost/api/questions?rounds=1,2,3&source=exam&count=10'),{},transport);
+  assert.ok((await all.json()).questions.some(q=>q.concept==='C'));
+});
 
 test('리포트 주소는 DT 학생 링크만 받고 다른 호스트와 프로토콜을 거절합니다', () => {
   assert.equal(parseReportLink('https://chemistreal.github.io/DT/report.html?student=abcdef123&c=ch1s').student,'abcdef123');

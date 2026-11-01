@@ -76,6 +76,67 @@ export function selectReview(questions, weaknesses, count = 10) {
   return questions.filter(q => names.has(canonical(q.concept)) || ids.has(q.conceptId)).slice(0, count);
 }
 
+export function shuffle(items, random = Math.random) {
+  const result=[...items];
+  for(let i=result.length-1;i>0;i--){const j=Math.floor(random()*(i+1));[result[i],result[j]]=[result[j],result[i]];}
+  return result;
+}
+
+export function uniqueQuestions(questions) {
+  const seen=new Map();
+  const text=value=>String(value ?? '').normalize('NFKC').replace(/\s+/g,' ').trim();
+  for(const q of questions) {
+    const key=JSON.stringify([q.kind,text(q.stem),q.choices.map(text)]);
+    const previous=seen.get(key);
+    if(!previous)seen.set(key,q);
+    else if(q.conceptMatches)seen.set(key,{...previous,conceptMatches:[...new Map([...(previous.conceptMatches || []),...q.conceptMatches].map(c=>[c.conceptId,c])).values()]});
+  }
+  return [...seen.values()];
+}
+
+export function selectBalanced(questions, count = 10, random = Math.random) {
+  const groups=new Map();
+  for(const [index,q] of uniqueQuestions(questions).entries()) {
+    for(const concept of q.conceptMatches || [q]) {
+      const key=concept.conceptId || canonical(concept.concept);
+      if(!groups.has(key))groups.set(key,[]);
+      groups.get(key).push({index,question:{...q,...concept}});
+    }
+  }
+  const buckets=shuffle([...groups.values()],random).map(group=>shuffle(group,random));
+  // A shared question may satisfy only one concept slot. Reassign earlier slots
+  // when needed so a scarce concept does not lose its only question to another.
+  const assigned=new Map();
+  function assign(slot,visited) {
+    for(const item of slot.bucket) {
+      if(visited.has(item.index))continue;
+      visited.add(item.index);
+      const previous=assigned.get(item.index);
+      if(!previous || assign(previous,visited)) {
+        assigned.set(item.index,slot);slot.question=item.question;return true;
+      }
+    }
+    return false;
+  }
+  const selected=[];
+  while(selected.length<count) {
+    let added=false;
+    for(const bucket of buckets) {
+      if(selected.length>=count)break;
+      const slot={bucket};
+      if(assign(slot,new Set())){selected.push(slot);added=true;}
+    }
+    if(!added)break;
+  }
+  return shuffle(selected.map(slot=>slot.question),random);
+}
+
+export function checkedRounds(value) {
+  const list=Array.isArray(value)?value:String(value ?? '').split(',');
+  if(!list.length || list.length>10)throw new AppError('준비할 회차를 1개 이상 선택해 주세요.');
+  return [...new Set(list.map(checkedRound))].sort((a,b)=>a-b);
+}
+
 export function grade(question, selected) {
   const answer = String(selected);
   const isOx = question.kind === 'ox' || question.choices?.join('|') === 'O|X';
@@ -85,7 +146,7 @@ export function grade(question, selected) {
 }
 
 export function publicQuestion(q) {
-  const { answer, explanation, ...visible } = q;
+  const { answer, explanation, conceptMatches, ...visible } = q;
   return visible;
 }
 

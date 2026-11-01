@@ -1,5 +1,5 @@
-import { AppError, canonical, checkedRound, grade, publicQuestion, mergeWeaknesses, selectReview } from './core.js';
-import { loadPlan, loadStudyBank, loadQuestion, loadReport } from './data.js';
+import { AppError, canonical, checkedRound, checkedRounds, grade, publicQuestion, mergeWeaknesses, selectReview, selectBalanced, shuffle } from './core.js';
+import { loadPlan, loadStudyBank, loadPreparationBank, loadQuestion, loadReport } from './data.js';
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type':'application/json; charset=utf-8', 'Cache-Control':'private, no-store', 'X-Content-Type-Options':'nosniff' } });
 const configOf = env => ({ url: String(env.SUPABASE_URL || '').trim().replace(/\/+$/,''), key: String(env.SUPABASE_PUBLISHABLE_KEY || env.SUPABASE_ANON_KEY || '').trim() });
@@ -79,6 +79,7 @@ export async function handleApi(request, env = process.env, fetcher = fetch) {
     }
     if (route === 'questions' && method === 'GET') {
       const round = checkedRound(url.searchParams.get('round') || 1);
+      const rounds = url.searchParams.has('rounds') ? checkedRounds(url.searchParams.get('rounds')) : null;
       const mode = url.searchParams.get('mode') || 'exam';
       const source = url.searchParams.get('source') || 'dt';
       const count = Number(url.searchParams.get('count') || 10);
@@ -89,12 +90,11 @@ export async function handleApi(request, env = process.env, fetcher = fetch) {
         weak = (await getProgress(auth,fetcher)).weaknesses;
         if (!weak.length) return json({questions:[],total:0,message:'현재 복습할 오답 개념이 없습니다. 리포트를 연결하거나 시험 대비 문제를 풀어보세요.'});
       }
-      const all = await loadStudyBank(round,source,weak,fetcher);
+      const all = mode==='exam' && rounds ? await loadPreparationBank(rounds,source,fetcher) : await loadStudyBank(round,source,weak,fetcher);
       const matched = mode === 'review' ? selectReview(all,weak,all.length) : all;
       // Shuffle a copy; answers and explanations remain on the server until submission.
-      const shuffled = [...matched];
-      for(let i=shuffled.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[shuffled[i],shuffled[j]]=[shuffled[j],shuffled[i]];}
-      return json({questions:shuffled.slice(0,count).map(publicQuestion),total:matched.length,message:matched.length?'':'이 범위와 정확히 연결되는 문제가 없습니다. 다른 문제 자료를 선택해 주세요.'});
+      const chosen=mode==='exam' && rounds ? selectBalanced(matched,count) : shuffle(matched).slice(0,count);
+      return json({questions:chosen.map(publicQuestion),total:matched.length,message:matched.length?'':'이 범위와 정확히 연결되는 문제가 없습니다. 다른 문제 자료를 선택해 주세요.'});
     }
     if (route === 'answer' && method === 'POST') {
       const body = await bodyOf(request);

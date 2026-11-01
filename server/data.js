@@ -1,4 +1,4 @@
-import { AppError, canonical, normalizeDt, normalizeExam, extractWeaknesses, parseReportLink } from './core.js';
+import { AppError, canonical, normalizeDt, normalizeExam, extractWeaknesses, parseReportLink, uniqueQuestions } from './core.js';
 
 const DT = 'https://raw.githubusercontent.com/Chemistreal/DT/main/';
 const EXAM = 'https://raw.githubusercontent.com/Chemistreal/exam/main/';
@@ -47,18 +47,46 @@ export async function loadStudyBank(round, source = 'dt', weaknesses = [], fetch
     return [...new Map([...questions, ...additional.flat()].map(q => [q.id,q])).values()];
   }
   if (source !== 'exam') throw new AppError('지원하지 않는 문제 자료입니다.');
-  const [plan, index] = await Promise.all([loadPlan(fetcher), readJson(EXAM + 'donghyung/index.json', fetcher)]);
+  const plan = await loadPlan(fetcher);
   const concepts = weaknesses.length ? weaknesses.map(w => canonical(w.name)) : Object.values(plan.concepts).filter(c => c.r <= round).map(c => canonical(c.m));
+  return loadExamBank(concepts,fetcher);
+}
+
+async function loadExamBank(concepts, fetcher, fullRange = false) {
+  const index=await readJson(EXAM + 'donghyung/index.json',fetcher);
   const wanted = new Set(concepts);
   const matchingEntries = Object.entries(index.concept || {}).filter(([name,refs]) => wanted.has(canonical(name)) && Array.isArray(refs));
   const refs = [...new Set(matchingEntries.flatMap(([,v]) => v))];
-  const examIds = [...new Set(refs.map(r => r.split(':')[0]).filter(id => /^[a-zA-Z0-9_-]{1,90}$/.test(id)))].slice(0,4);
+  const allExamIds = [...new Set(refs.map(r => r.split(':')[0]).filter(id => /^[a-zA-Z0-9_-]{1,90}$/.test(id)))];
+  const examIds = fullRange ? allExamIds : allExamIds.slice(0,4);
   const wantedRefs = new Set(refs);
   const banks = await Promise.all(examIds.map(async id => normalizeExam(await readJson(`${EXAM}donghyung/${id}.json`, fetcher))));
   return banks.flat().filter(q => wantedRefs.has(q.id.slice(5))).map(q => {
     const matchingConcepts=matchingEntries.filter(([,refs])=>refs.includes(q.id.slice(5))).map(([name])=>name);
     return {...q,originalConcept:q.concept,concept:matchingConcepts[0] || q.concept,matchingConcepts};
   });
+}
+
+export async function loadPreparationBank(rounds, source = 'dt', fetcher = fetch) {
+  const plan=await loadPlan(fetcher);
+  const selected=new Set(rounds);
+  const concepts=Object.entries(plan.concepts).filter(([,c])=>selected.has(Number(c.r)));
+  const byId=new Map(concepts);
+  const byName=new Map(concepts.map(([id,c])=>[canonical(c.m),{...c,id}]));
+  let questions;
+  if(source==='dt') {
+    const banks=await Promise.all(rounds.map(round=>loadDt(round,fetcher)));
+    questions=banks.flat().filter(q=>byId.has(q.conceptId)).map(q=>({...q,preparationRound:Number(byId.get(q.conceptId).r)}));
+  } else if(source==='exam') {
+    questions=(await loadExamBank([...byName.keys()],fetcher,true)).map(q=>{
+      const conceptMatches=q.matchingConcepts.map(name=>{
+        const entry=byName.get(canonical(name));
+        return {id:q.id,sourceId:q.sourceId,sourceUrl:q.sourceUrl,concept:name,conceptId:entry.id,preparationRound:Number(entry.r)};
+      });
+      return {...q,...conceptMatches[0],conceptMatches};
+    });
+  } else throw new AppError('지원하지 않는 문제 자료입니다.');
+  return uniqueQuestions(questions);
 }
 
 export async function loadQuestion(id, fetcher = fetch) {
