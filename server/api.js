@@ -126,7 +126,7 @@ export async function handleApi(request, env = process.env, fetcher = fetch) {
       const mode = url.searchParams.get('mode') || 'exam';
       const source = url.searchParams.get('source') || 'dt';
       const count = Number(url.searchParams.get('count') || 10);
-      if (!['exam','review'].includes(mode) || !['dt','exam'].includes(source) || ![5,10,20,60].includes(count)) throw new AppError('문제 선택 조건이 올바르지 않습니다.');
+      if (!['exam','review'].includes(mode) || !['dt','exam'].includes(source) || ![5,10,20,30,60].includes(count)) throw new AppError('문제 선택 조건이 올바르지 않습니다.');
       let weak = [];
       if (mode === 'review') {
         const auth = await authenticate(request,env,fetcher);

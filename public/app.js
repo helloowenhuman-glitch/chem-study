@@ -116,7 +116,7 @@ function home() {
     ${state.report?`<p class="note">리포트 갱신 ${dateLabel(state.report.synced_at)} · <button type="button" class="text-button" data-action="sync-report">새로 불러오기</button></p>`:''}`;
 }
 function options() {
-  return `<div class="study-options"><div><label for="question-source">문제 자료</label><select id="question-source"><option value="dt"${state.source==='dt'?' selected':''}>DT OX</option><option value="exam"${state.source==='exam'?' selected':''}>exam 객관식</option></select></div><div><label for="question-count">문항 수</label><select id="question-count">${[5,10,20,60].map(n=>`<option value="${n}"${state.count===n?' selected':''}>${n}문항</option>`).join('')}</select></div></div>`;
+  return `<div class="study-options"><div><label for="question-source">문제 자료</label><select id="question-source"><option value="dt"${state.source==='dt'?' selected':''}>DT OX</option><option value="exam"${state.source==='exam'?' selected':''}>exam 객관식</option></select></div><div><label for="question-count">문항 수</label><select id="question-count">${[5,10,20,30,60].map(n=>`<option value="${n}"${state.count===n?' selected':''}>${n}문항</option>`).join('')}</select></div></div>`;
 }
 function rounds() {
   return `${back('home','홈으로')}<div class="overline">시험 대비</div><h1>어느 회차를<br>준비하실까요?</h1><p class="description">여러 회차를 함께 선택하실 수 있습니다.<br>선택한 회차의 개념별로 문제 수를 고르게 배분합니다.</p>
